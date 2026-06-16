@@ -328,9 +328,25 @@ def scrape_business_list(business_ids: list[str],
 
 
 def load_business_ids_from_json(json_path: str, chunk_index: int = 0) -> list[str]:
-    """Load a chunk of business IDs from the pre-split chunks JSON file."""
+    """
+    Load a chunk of business IDs from a JSON or JSON Lines chunks file.
+
+    Supports two layouts:
+      - Standard JSON:  a single array-of-arrays  [[id, ...], [id, ...], ...]
+      - JSON Lines:     one JSON value per line    [id, ...]\n[id, ...]\n...
+    """
     with open(json_path) as f:
-        chunks = json.load(f)
+        content = f.read().strip()
+
+    # Try standard JSON first
+    try:
+        chunks = json.loads(content)
+        return chunks[chunk_index]
+    except json.JSONDecodeError:
+        pass
+
+    # Fall back to JSON Lines (one value per line)
+    chunks = [json.loads(line) for line in content.splitlines() if line.strip()]
     return chunks[chunk_index]
 
 
