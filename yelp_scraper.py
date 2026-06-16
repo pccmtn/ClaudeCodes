@@ -92,7 +92,7 @@ def fetch_page(business_id: str, pagestart: int,
                 return None
             print(
                 f"[Attempt {attempt}/{max_retries}] HTTP {response.status_code} "
-                f"for {business_id}, retrying in {delay:.1f}s…"
+                f"for '{business_id}' (url={url}), retrying in {delay:.1f}s…"
             )
         except requests.exceptions.RequestException as exc:
             print(f"[Attempt {attempt}/{max_retries}] Request error: {exc}, retrying in {delay:.1f}s…")
