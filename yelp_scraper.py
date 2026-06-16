@@ -327,6 +327,21 @@ def scrape_business_list(business_ids: list[str],
         scrape_business(business_id, output_dir=output_dir, base_delay=base_delay)
 
 
+def load_business_ids_from_dataset(json_path: str) -> list[str]:
+    """
+    Extract all business_id values from the Yelp Academic Dataset business file
+    (yelp_academic_dataset_business.json — one JSON object per line).
+    """
+    ids = []
+    with open(json_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                ids.append(json.loads(line)["business_id"])
+    print(f"[Info] Loaded {len(ids)} business IDs from {json_path}")
+    return ids
+
+
 def load_business_ids_from_json(json_path: str, chunk_index: int = 0) -> list[str]:
     """
     Load a chunk of business IDs from a JSON or JSON Lines chunks file.
