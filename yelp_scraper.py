@@ -74,15 +74,58 @@ def _random_headers() -> dict:
     return {"User-Agent": random.choice(USER_AGENTS)}
 
 
+def load_proxies(source: str | list[str] | None = None) -> list[str]:
+    """
+    Load a list of proxy URLs, e.g. "http://user:pass@host:port".
+
+    `source` may be:
+      - None: read from the PROXY_LIST env var (comma-separated), or
+        PROXY_LIST_FILE env var (one proxy per line)
+      - a path to a text file (one proxy per line)
+      - a list of proxy URL strings (returned as-is)
+    """
+    if isinstance(source, list):
+        return source
+
+    if source is None:
+        env_list = os.environ.get("PROXY_LIST")
+        if env_list:
+            return [p.strip() for p in env_list.split(",") if p.strip()]
+        source = os.environ.get("PROXY_LIST_FILE")
+
+    if not source:
+        return []
+
+    with open(source) as f:
+        return [line.strip() for line in f if line.strip()]
+
+
+def _random_proxies(proxy_list: list[str]) -> dict | None:
+    if not proxy_list:
+        return None
+    proxy = random.choice(proxy_list)
+    return {"http": proxy, "https": proxy}
+
+
 def fetch_page(business_id: str, pagestart: int,
-               max_retries: int = 10, base_delay: float = 20.0) -> requests.Response | None:
-    """Fetch one Yelp review page, retrying on transient errors."""
+               max_retries: int = 10, base_delay: float = 20.0,
+               proxies: list[str] | None = None) -> requests.Response | None:
+    """
+    Fetch one Yelp review page, retrying on transient errors.
+
+    If `proxies` is given (a list of proxy URLs), a random proxy is used for
+    each attempt — this helps avoid IP-based rate limiting/blocking. Pass the
+    result of `load_proxies()` to source proxies from env vars or a file.
+    """
     url = f"https://www.yelp.com/biz/{business_id}?start={pagestart}#reviews"
     delay = base_delay
 
     for attempt in range(1, max_retries + 1):
+        proxy_dict = _random_proxies(proxies) if proxies else None
         try:
-            response = requests.get(url, headers=_random_headers(), timeout=30)
+            response = requests.get(
+                url, headers=_random_headers(), proxies=proxy_dict, timeout=30
+            )
             if response.status_code == 200:
                 soup = BeautifulSoup(response.content, "lxml")
                 if soup.select(SEL["review_blocks"]):
@@ -92,10 +135,12 @@ def fetch_page(business_id: str, pagestart: int,
                 return None
             print(
                 f"[Attempt {attempt}/{max_retries}] HTTP {response.status_code} "
-                f"for '{business_id}' (url={url}), retrying in {delay:.1f}s…"
+                f"for '{business_id}' (url={url}, proxy={proxy_dict and proxy_dict['https']}), "
+                f"retrying in {delay:.1f}s…"
             )
         except requests.exceptions.RequestException as exc:
-            print(f"[Attempt {attempt}/{max_retries}] Request error: {exc}, retrying in {delay:.1f}s…")
+            print(f"[Attempt {attempt}/{max_retries}] Request error: {exc} "
+                  f"(proxy={proxy_dict and proxy_dict['https']}), retrying in {delay:.1f}s…")
 
         jitter = random.uniform(0, 5)
         time.sleep(delay + jitter)
@@ -241,7 +286,8 @@ def save_to_csv(df: pd.DataFrame, business_id: str,
 # ---------------------------------------------------------------------------
 def scrape_business(business_id: str,
                     output_dir: str = "~/Documents/Yelp",
-                    base_delay: float = 20.0) -> pd.DataFrame:
+                    base_delay: float = 20.0,
+                    proxies: list[str] | None = None) -> pd.DataFrame:
     """
     Scrape all public reviews for a Yelp business and save them to CSV.
 
@@ -254,6 +300,8 @@ def scrape_business(business_id: str,
         Directory where per-business CSV files are written.
     base_delay : float
         Base seconds to wait between page requests (jitter is added).
+    proxies : list[str] | None
+        Pool of proxy URLs to rotate through (see `load_proxies()`).
 
     Returns
     -------
@@ -262,7 +310,7 @@ def scrape_business(business_id: str,
     delay = base_delay + random.uniform(0, 5)
     print(f"[Start] {business_id}  delay={delay:.1f}s")
 
-    first_response = fetch_page(business_id, pagestart=0, base_delay=delay)
+    first_response = fetch_page(business_id, pagestart=0, base_delay=delay, proxies=proxies)
 
     if first_response is None:
         df = pd.DataFrame([_empty_row(business_id=business_id, page_number="no_pages")])
@@ -287,7 +335,7 @@ def scrape_business(business_id: str,
     for page in range(1, pages_needed):
         pagestart = page * 10
         print(f"[Fetching] page {page}/{pages_needed - 1}  (start={pagestart})")
-        response = fetch_page(business_id, pagestart=pagestart, base_delay=delay)
+        response = fetch_page(business_id, pagestart=pagestart, base_delay=delay, proxies=proxies)
         df_page = parse_reviews(response, business_id, page_number=page)
         save_to_csv(df_page, business_id, output_dir)
         all_frames.append(df_page)
@@ -316,7 +364,8 @@ def already_collected(output_dir: str = "~/Documents/Yelp") -> set[str]:
 def scrape_business_list(business_ids: list[str],
                          output_dir: str = "~/Documents/Yelp",
                          base_delay: float = 20.0,
-                         skip_collected: bool = True) -> None:
+                         skip_collected: bool = True,
+                         proxies: list[str] | None = None) -> None:
     """Scrape a list of business IDs, optionally skipping already-done ones."""
     if skip_collected:
         done = already_collected(output_dir)
@@ -324,7 +373,7 @@ def scrape_business_list(business_ids: list[str],
         print(f"[Batch] {len(business_ids)} businesses remaining after skip.")
 
     for business_id in tqdm(business_ids, desc="Scraping"):
-        scrape_business(business_id, output_dir=output_dir, base_delay=base_delay)
+        scrape_business(business_id, output_dir=output_dir, base_delay=base_delay, proxies=proxies)
 
 
 def load_business_ids_from_dataset(json_path: str) -> list[str]:
@@ -369,12 +418,17 @@ def load_business_ids_from_json(json_path: str, chunk_index: int = 0) -> list[st
 # Example usage (not executed on import)
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    # Optional: rotate through a pool of proxies to reduce IP-based blocking.
+    # Set PROXY_LIST="http://user:pass@host1:port,http://user:pass@host2:port"
+    # or PROXY_LIST_FILE=/path/to/proxies.txt (one per line), then:
+    # proxies = load_proxies()
+
     # Single business
-    # scrape_business("gary-danko-san-francisco", base_delay=3)
+    # scrape_business("gary-danko-san-francisco", base_delay=3, proxies=proxies)
 
     # Batch from Yelp Academic Dataset chunks file
     # ids = load_business_ids_from_json(
     #     "/path/to/unique_business_names.json", chunk_index=0
     # )
-    # scrape_business_list(ids, base_delay=3)
+    # scrape_business_list(ids, base_delay=3, proxies=proxies)
     pass
